@@ -1,0 +1,61 @@
+/* Make the loader small and not cover the table */
+
+/* Loader beside table, vertically centered */
+.cemantix-loader {
+    width: 3h;
+    min-width: 3h;
+    max-width: 3h;
+    height: 3h;
+    min-height: 3h;
+    max-height: 3h;
+    margin-right: 2;
+    align-vertical: middle;
+    align-horizontal: center;
+}
+
+#loader-table-row {
+    height: 1fr;
+    width: 1fr;
+    align-vertical: middle;
+    align-horizontal: left;
+}
+
+Screen {
+    align: center middle;
+}
+
+#main-container {
+    width: 90%;
+    height: 95%;
+    border: double $accent;
+    padding: 1;
+    layout: vertical;
+    align: center middle;
+}
+
+#input-area {
+    height: auto;
+    margin-bottom: 1;
+}
+
+Input {
+    width: 1fr;
+    border: tall $primary;
+}
+
+DataTable {
+    height: 1fr;
+    width: 1fr;
+    border: round $secondary;
+    margin-top: 1;
+    min-width: 0fr;
+}
+
+.top-1000 {
+    color: $success;
+    text-style: bold;
+}
+
+.cold {
+    color: $text-muted;
+}
