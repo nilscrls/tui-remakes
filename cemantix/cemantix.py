@@ -1,37 +1,45 @@
+"""Cémantix TUI - A semantic word guessing game"""
 import httpx
 import json
-import os
+import re
 from datetime import datetime
+from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Input, DataTable, Label, LoadingIndicator
 from textual.containers import Vertical, Horizontal
 from textual.binding import Binding
-import re
+from textual import work
 
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "history.json")
-
-headers = {
+HISTORY_FILE = Path(__file__).parent / "history.json"
+API_HOST = "cemantix.certitudes.org"
+API_URL = f"https://{API_HOST}"
+API_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded",
-    "Host": "cemantix.certitudes.org",
-    "Origin": "https://cemantix.certitudes.org",
-    "referrer": "https://cemantix.certitudes.org/",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36",
+    "Host": API_HOST,
+    "Origin": API_URL,
+    "Referrer": f"{API_URL}/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
+
 class CemantixTUI(App):
+    """A TUI game for Cémantix - guess words based on semantic similarity"""
+    
     TITLE = "Cémantix"
     SUB_TITLE = "TUI Remake"
+    CSS_PATH = "style.tcss"
     
-    CSS_PATH = "cemantix.tcss"
-
-
     BINDINGS = [
         Binding("q", "quit", "Quitter"),
         Binding("ctrl+l", "clear_history", "Effacer Historique"),
     ]
-    url = "https://cemantix.certitudes.org/"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.puzzle_number = None
 
     def compose(self) -> ComposeResult:
+        """Create the UI layout"""
         yield Header()
         with Vertical(id="main-container"):
             yield Label("Trouvez le mot secret du jour :")
@@ -43,212 +51,190 @@ class CemantixTUI(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        """Initialize the application"""
         self.theme = "dracula"
+        
+        # Setup table
         table = self.query_one(DataTable)
-        # We assign explicit keys here to avoid the KeyError: 2
         table.add_column("Essai", key="attempt")
         table.add_column("Mot", key="word")
         table.add_column("Score (%)", key="score")
         table.add_column("Rang", key="rank")
-
         table.cursor_type = "row"
-        self.load_history()
+        
+        # Load history and puzzle
+        self._load_history()
         self.query_one(Input).focus()
-        await self.load_puzzle_number_worker()
+        self._fetch_puzzle_number()
 
-    def load_history(self):
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, "r") as f:
-                    all_days = json.load(f)
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    today_entry = None
-                    for entry in all_days:
-                        if entry.get("date") == today:
-                            today_entry = entry
-                            break
-                    if today_entry:
-                        for guess in today_entry.get("guesses", []):
-                            self.add_to_table(guess["word"], guess["score"], guess["rank"], save=False)
-                        # Optionally, set self.puzzle_number if present
-                        if "puzzle_number" in today_entry:
-                            self.puzzle_number = today_entry["puzzle_number"]
-            except Exception:
-                pass
+    # ============ History Management ============
 
-    def save_history(self):
+    def _load_history(self) -> None:
+        """Load today's history from disk"""
+        if not HISTORY_FILE.exists():
+            return
+            
+        try:
+            all_days = json.loads(HISTORY_FILE.read_text())
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            for entry in all_days:
+                if entry.get("date") == today:
+                    for guess in entry.get("guesses", []):
+                        self._add_to_table(
+                            guess["word"], 
+                            guess["score"], 
+                            guess["rank"], 
+                            save=False
+                        )
+                    if "puzzle_number" in entry:
+                        self.puzzle_number = entry["puzzle_number"]
+                    break
+        except Exception:
+            pass
+
+    def _save_history(self) -> None:
+        """Save current session to history file"""
         table = self.query_one(DataTable)
         guesses = []
+        
         for row_key in table.rows:
             row = table.get_row(row_key)
             guesses.append({
                 "word": row[1],
-                # Clean "%" for storage
                 "score": float(str(row[2]).replace('%', '')),
                 "rank": int(row[3]) if str(row[3]).isdigit() else None
             })
 
         today = datetime.now().strftime("%Y-%m-%d")
-        puzzle_number = getattr(self, "puzzle_number", None)
-        new_entry = {"date": today, "puzzle_number": puzzle_number, "guesses": guesses}
+        new_entry = {
+            "date": today,
+            "puzzle_number": self.puzzle_number,
+            "guesses": guesses
+        }
 
+        # Load existing history
         all_days = []
-        if os.path.exists(HISTORY_FILE):
+        if HISTORY_FILE.exists():
             try:
-                with open(HISTORY_FILE, "r") as f:
-                    all_days = json.load(f)
+                all_days = json.loads(HISTORY_FILE.read_text())
             except Exception:
                 all_days = []
 
-        # Replace or add today's entry
-        found = False
+        # Update or append today's entry
         for i, entry in enumerate(all_days):
             if entry.get("date") == today:
                 all_days[i] = new_entry
-                found = True
                 break
-        if not found:
+        else:
             all_days.append(new_entry)
 
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(all_days, f, indent=2)
+        HISTORY_FILE.write_text(json.dumps(all_days, indent=2))
 
-    def action_clear_history(self):
-        # Only clear today's history, not the whole file
+    def action_clear_history(self) -> None:
+        """Clear today's history (ctrl+l)"""
         today = datetime.now().strftime("%Y-%m-%d")
+        
         all_days = []
-        if os.path.exists(HISTORY_FILE):
+        if HISTORY_FILE.exists():
             try:
-                with open(HISTORY_FILE, "r") as f:
-                    all_days = json.load(f)
+                all_days = json.loads(HISTORY_FILE.read_text())
             except Exception:
-                all_days = []
+                pass
+        
         all_days = [entry for entry in all_days if entry.get("date") != today]
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(all_days, f, indent=2)
+        HISTORY_FILE.write_text(json.dumps(all_days, indent=2))
+        
         self.query_one(DataTable).clear()
         self.notify("Historique effacé")
 
+    # ============ Puzzle Number Fetching ============
 
-    async def load_puzzle_number_worker(self):
+    @work(exclusive=True, group="fetch")
+    async def _fetch_puzzle_number(self) -> None:
+        """Fetch the current puzzle number from the website"""
         loader = self.query_one("#loader", LoadingIndicator)
+        input_widget = self.query_one(Input)
+        
         loader.display = True
-        loader.visible = True
-        self.query_one(Input).disabled = True
-        # Start the worker and poll for completion
-        self._puzzle_worker = self.run_worker(
-            self.fetch_puzzle_number,
-            description="Chargement du puzzle...",
-            group="puzzle-number",
-        )
-        self._puzzle_interval = self.set_interval(0.1, self._poll_puzzle_worker)
-
-    def _poll_puzzle_worker(self):
-        worker = getattr(self, "_puzzle_worker", None)
-        if worker is None:
-            return
-        if worker.is_finished:
-            result = worker.result
-            error = worker.error
-            loader = self.query_one("#loader", LoadingIndicator)
-            loader.display = False
-            loader.visible = False
-            self.query_one(Input).disabled = False
-            if error:
-                self.notify(f"Erreur lors du chargement du puzzle: {error}", severity="error")
-            elif result:
-                self.puzzle_number = result
-                self.notify(f"Numéro de puzzle: {self.puzzle_number}", severity="information")
-            else:
-                self.notify("Numéro de puzzle introuvable.", severity="error")
-            # Stop polling
-            self._puzzle_worker = None
-            if hasattr(self, "_puzzle_interval"):
-                self._puzzle_interval.stop()
-                self._puzzle_interval = None
-
-    def on_puzzle_number_done(self, result):
-        loader = self.query_one("#loader", LoadingIndicator)
-        loader.display = False
-        loader.visible = False
-        self.query_one(Input).disabled = False
-        if result:
-            self.puzzle_number = result
-            self.notify(f"Numéro de puzzle: {self.puzzle_number}", severity="information")
-        else:
-            self.notify("Numéro de puzzle introuvable.", severity="error")
-
-    def on_puzzle_number_error(self, error):
-        loader = self.query_one("#loader", LoadingIndicator)
-        loader.display = False
-        loader.visible = False
-        self.query_one(Input).disabled = False
-        self.notify(f"Erreur lors du chargement du puzzle: {error}", severity="error")
-
-    async def fetch_puzzle_number(self):
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(self.url, headers=headers)
-            if response.status_code == 200:
+        input_widget.disabled = True
+        
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(API_URL, headers=API_HEADERS)
+                
+                if response.status_code == 403:
+                    self.notify("Accès refusé. Vérifiez votre adresse IP.", severity="error")
+                    return
+                    
+                if response.status_code != 200:
+                    self.notify("Échec du chargement de la page.", severity="error")
+                    return
+                
                 match = re.search(r'data-puzzle-number="(\d+)"', response.text)
                 if match:
-                    return match.group(1)
-            elif response.status_code == 403:
-                raise Exception("Accès refusé. Vérifiez votre adresse IP.")
-            else:
-                raise Exception("Échec du chargement de la page.")
-        return None
-
-
-
-    def get_score_worker(self, word: str):
-        # Pass the coroutine directly to run_worker, not a lambda
-        self._score_worker = self.run_worker(
-            self.fetch_score(word),
-            description="Recherche du score...",
-            group="score-worker",
-        )
-        self._score_interval = self.set_interval(0.1, self._poll_score_worker)
-
-    def _poll_score_worker(self):
-        worker = getattr(self, "_score_worker", None)
-        if worker is None:
-            return
-        if worker.is_finished:
-            result = worker.result
-            error = worker.error
-            loader = self.query_one("#loader", LoadingIndicator)
-            loader.display = False
-            loader.visible = False
-            self.query_one(Input).disabled = False
-            if error:
-                self.notify(f"Erreur lors de la récupération du score: {error}", severity="error")
-            elif result:
-                if "e" in result:
-                    self.notify(result["e"], severity="error")
+                    self.puzzle_number = match.group(1)
+                    self.notify(f"Puzzle #{self.puzzle_number}", severity="information")
                 else:
-                    # Score is 0-1, so we * 100
-                    score_pct = result.get("s", 0) * 100
-                    self.add_to_table(self._score_word, score_pct, result.get("p"))
-                    if result.get("p") == 1000:
-                        self.notify("🎉 BRAVO ! Vous avez trouvé le mot !", severity="information", timeout=10)
-            # Stop polling
-            self._score_worker = None
-            if hasattr(self, "_score_interval"):
-                self._score_interval.stop()
-                self._score_interval = None
-            self._score_word = None
+                    self.notify("Numéro de puzzle introuvable.", severity="error")
+                    
+        except httpx.TimeoutException:
+            self.notify("Délai d'attente dépassé.", severity="error")
+        except Exception as e:
+            self.notify(f"Erreur: {e}", severity="error")
+        finally:
+            loader.display = False
+            input_widget.disabled = False
 
-    async def fetch_score(self, word: str):
-        url = f"https://cemantix.certitudes.org/score?n={self.puzzle_number}"
-        data = f"word={word}".encode("utf-8")
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(url, headers=headers, data=data)
-            return response.json()
+    # ============ Word Scoring ============
 
-    def add_to_table(self, word: str, score: float, rank: any, save=True):
+    @work(exclusive=True, group="score")
+    async def _fetch_score(self, word: str) -> None:
+        """Fetch the score for a guessed word"""
+        loader = self.query_one("#loader", LoadingIndicator)
+        input_widget = self.query_one(Input)
+        
+        loader.display = True
+        input_widget.disabled = True
+        
+        try:
+            url = f"{API_URL}/score?n={self.puzzle_number}"
+            data = f"word={word}".encode("utf-8")
+            
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(url, headers=API_HEADERS, data=data)
+                result = response.json()
+            
+            if "e" in result:
+                self.notify(result["e"], severity="error")
+            else:
+                score_pct = result.get("s", 0) * 100
+                rank = result.get("p")
+                
+                self._add_to_table(word, score_pct, rank)
+                
+                if rank == 1000:
+                    self.notify(
+                        "🎉 BRAVO ! Vous avez trouvé le mot !",
+                        severity="information",
+                        timeout=10
+                    )
+                    
+        except httpx.TimeoutException:
+            self.notify("Délai d'attente dépassé.", severity="error")
+        except Exception as e:
+            self.notify(f"Erreur lors de la récupération du score: {e}", severity="error")
+        finally:
+            loader.display = False
+            input_widget.disabled = False
+
+    # ============ Table Management ============
+
+    def _add_to_table(self, word: str, score: float, rank: int | None, save: bool = True) -> None:
+        """Add a word result to the table"""
         table = self.query_one(DataTable)
         
-        # Avoid duplicates
+        # Check for duplicates
         for row_key in table.rows:
             if table.get_row(row_key)[1] == word:
                 return
@@ -257,33 +243,35 @@ class CemantixTUI(App):
         rank_val = str(rank) if rank is not None else "---"
         
         table.add_row(
-            str(attempt_num), 
-            word, 
-            f"{score:.2f}%", 
+            str(attempt_num),
+            word,
+            f"{score:.2f}%",
             rank_val,
-            key=word # Using the word as the unique row key
+            key=word
         )
         
-        # Sort using the 'score' column key
-        # We use a lambda to ensure 9.0% doesn't come after 10.0% (string sorting)
+        # Sort by score descending
         table.sort("score", reverse=True, key=lambda val: float(val.replace('%', '')))
         
         if save:
-            self.save_history()
+            self._save_history()
 
+    # ============ Event Handlers ============
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle word submission"""
         word = event.value.strip().lower()
+        
         if not word:
             return
+            
+        if not self.puzzle_number:
+            self.notify("Puzzle non chargé. Veuillez patienter.", severity="warning")
+            return
+        
         event.input.value = ""
+        self._fetch_score(word)
 
-        loader = self.query_one("#loader", LoadingIndicator)
-        loader.display = True
-        loader.visible = True
-        self.query_one(Input).disabled = True
-        self._score_word = word
-        self.get_score_worker(word)
 
 if __name__ == "__main__":
     app = CemantixTUI()
