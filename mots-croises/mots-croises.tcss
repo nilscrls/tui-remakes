@@ -1,0 +1,116 @@
+Screen {
+    align: center middle;
+}
+
+GridPickerScreen {
+    align: center middle;
+}
+
+#picker-box {
+    width: 52;
+    height: 80%;
+    max-height: 28;
+    border: thick $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#picker-title {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+#picker-list {
+    height: 1fr;
+    background: $surface;
+}
+
+#picker-hint {
+    width: 100%;
+    text-align: center;
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#main-container {
+    width: 95%;
+    height: 95%;
+    border: double $accent;
+    padding: 1;
+    layout: horizontal;
+}
+
+#grid-container {
+    width: auto;
+    height: 100%;
+    border: round $secondary;
+    padding: 1 2;
+    margin-right: 1;
+    background: $surface;
+    align: center middle;
+}
+
+#grid-view {
+    width: auto;
+    height: auto;
+    padding: 0;
+}
+
+#current-clue {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+    padding: 1 2;
+    background: $boost;
+    border: round $accent;
+    text-align: center;
+}
+
+#clues-container {
+    width: 1fr;
+    height: 100%;
+    border: round $secondary;
+    padding: 1 2;
+    background: $surface;
+}
+
+.clue-title {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+#across-list, #down-list {
+    width: 100%;
+    height: auto;
+    margin-bottom: 1;
+}
+
+.clue-item {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+}
+
+.clue-item:hover {
+    background: $boost;
+}
+
+.clue-item.found {
+    color: #6272a4;
+}
+
+.clue-item.wrong {
+    color: #ffb86c;
+    text-style: bold;
+}
+
+.clue-item.current {
+    background: $accent;
+    color: $background;
+    text-style: bold;
+}
