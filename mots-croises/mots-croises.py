@@ -157,8 +157,13 @@ async def fetch_puzzle(client: httpx.AsyncClient, date_id: str) -> dict | None:
     }
 
 
-async def check_words(client: httpx.AsyncClient, puzzle: dict, filled: list[dict]) -> list[dict]:
-    """Valide côté serveur les mots remplis. Renvoie la liste des mots corrects."""
+async def check_words(client: httpx.AsyncClient, puzzle: dict, filled: list[dict]) -> dict:
+    """Valide côté serveur les mots remplis. Renvoie la réponse brute.
+
+    Réponse normale : ``{"errors": N, "validated": [{id, word, axe}, ...]}``.
+    Réponse de complétion (grille entièrement correcte) : pas de clé
+    ``validated`` mais ``{"code": true, "points": ...}``.
+    """
     payload = {
         "time": 0,
         "is_discovery": puzzle["discovery"],
@@ -170,7 +175,7 @@ async def check_words(client: httpx.AsyncClient, puzzle: dict, filled: list[dict
     headers = {"Referer": f"{GAMIFY_BASE}/", "User-Agent": USER_AGENT}
     resp = await client.post(puzzle["check_url"], data=payload, headers=headers)
     resp.raise_for_status()
-    return resp.json().get("validated") or []
+    return resp.json()
 
 
 # ============ Modèle de grille ============
@@ -494,6 +499,12 @@ class MotsCroisesTUI(App):
         self.direction = first.axe
         self._render_all()
         self.notify(f"Grille n°{entry['number']} chargée.", severity="information")
+        # Grille déjà entièrement remplie mais pas validée : on revérifie
+        # (cas d'une grille terminée lors d'une session précédente).
+        if not self.board.all_found() and all(
+            self.board.letters[r][c] for (r, c) in self.board.white
+        ):
+            self._validate()
 
     # ---------- Sélection de grille ----------
 
@@ -811,9 +822,28 @@ class MotsCroisesTUI(App):
             return
 
         try:
-            validated = await check_words(self.client, puzzle, filled)
+            result = await check_words(self.client, puzzle, filled)
         except Exception:
             return
+
+        # Réponse de complétion : grille entièrement remplie et correcte.
+        # Le serveur ne renvoie alors pas de liste 'validated' mais 'code: true'.
+        validated = result.get("validated")
+        if validated is None:
+            if result.get("code"):
+                for w in board.words:
+                    if not w.found and all(
+                        board.letters[r][c] for (r, c) in w.cells
+                    ):
+                        w.found = True
+                        w.wrong = False
+                self._render_all()
+                self._save_progress()
+                self.notify(
+                    "🎉 Bravo ! Grille terminée !", severity="information", timeout=10
+                )
+            return
+
         validated_ids = {str(item["id"]) for item in validated}
 
         changed = False
