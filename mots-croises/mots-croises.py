@@ -17,6 +17,7 @@ import base64
 import codecs
 import json
 import re
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -71,24 +72,34 @@ async def fetch_grid_list(client: httpx.AsyncClient) -> list[dict]:
             }
     return sorted(by_number.values(), key=lambda e: e["number"], reverse=True)
 
-# Sauvegardes locales (une entrée par grille jouée, indexée par sa date).
+# Fichiers locaux : progression, cache des grilles, cache de la liste du jour.
 SAVES_FILE = Path(__file__).parent / "saves.json"
+GRIDS_CACHE_FILE = Path(__file__).parent / "grids_cache.json"
+GRIDLIST_CACHE_FILE = Path(__file__).parent / "gridlist_cache.json"
 
 
-def _read_saves() -> dict:
-    if SAVES_FILE.exists():
+def _read_json(path: Path) -> dict:
+    if path.exists():
         try:
-            return json.loads(SAVES_FILE.read_text())
+            return json.loads(path.read_text())
         except Exception:
             return {}
     return {}
 
 
-def _write_saves(data: dict) -> None:
+def _write_json(path: Path, data: dict) -> None:
     try:
-        SAVES_FILE.write_text(json.dumps(data, ensure_ascii=False))
+        path.write_text(json.dumps(data, ensure_ascii=False))
     except Exception:
         pass
+
+
+def _read_saves() -> dict:
+    return _read_json(SAVES_FILE)
+
+
+def _write_saves(data: dict) -> None:
+    _write_json(SAVES_FILE, data)
 
 
 def _data_param(date_id: str) -> str:
@@ -348,21 +359,28 @@ class MotsCroisesTUI(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quitter"),
-        Binding("up", "move(-1,0)", "Haut", show=False, priority=True),
-        Binding("down", "move(1,0)", "Bas", show=False, priority=True),
-        Binding("left", "move(0,-1)", "Gauche", show=False, priority=True),
-        Binding("right", "move(0,1)", "Droite", show=False, priority=True),
-        Binding("space", "toggle_direction", "Sens H/V", priority=True),
-        Binding("backspace", "backspace", "Effacer", show=False, priority=True),
-        Binding("tab", "next_word", "Mot suivant", priority=True),
-        Binding("g", "choose_grid", "Grilles", priority=True),
+        Binding("up", "move(-1,0)", "Haut", show=False),
+        Binding("down", "move(1,0)", "Bas", show=False),
+        Binding("left", "move(0,-1)", "Gauche", show=False),
+        Binding("right", "move(0,1)", "Droite", show=False),
+        Binding("space", "toggle_direction", "Sens H/V"),
+        Binding("backspace", "backspace", "Effacer", show=False),
+        Binding("tab", "next_word", "Mot suivant"),
+        Binding("ctrl+g", "choose_grid", "Grilles"),
     ]
+
+    # Actions de jeu désactivées quand un écran modal est ouvert (palette, etc.).
+    _GAME_ACTIONS = frozenset(
+        {"move", "toggle_direction", "backspace", "next_word", "choose_grid"}
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.board: Board | None = None
         self.puzzle: dict | None = None
         self.grid_list: list[dict] = []  # grilles disponibles (numéro + date)
+        # Cache des grilles téléchargées (persisté sur disque, indexé par numéro).
+        self.grid_cache: dict[str, dict] = _read_json(GRIDS_CACHE_FILE)
         self.cursor = (0, 0)
         self.direction = "x"
         self._last_click = None  # dernière case cliquée (pour le clic/re-clic)
@@ -386,15 +404,44 @@ class MotsCroisesTUI(App):
 
     def on_mount(self) -> None:
         self.theme = "dracula"
+        # Le panneau de définitions ne doit pas capter les flèches (navigation).
+        self.query_one("#clues-container").can_focus = False
         self._start()
 
     async def on_unmount(self) -> None:
         await self.client.aclose()
 
+    @property
+    def _modal_open(self) -> bool:
+        """Vrai si un écran modal (palette de commandes, sélecteur) est ouvert."""
+        return self.screen is not self.screen_stack[0]
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Neutralise les raccourcis de jeu tant qu'un écran modal est ouvert,
+        # pour que les touches aillent à la palette / au sélecteur.
+        if self._modal_open and action in self._GAME_ACTIONS:
+            return False
+        return True
+
     @work(exclusive=True, group="load")
     async def _start(self) -> None:
-        """Récupère la liste des grilles puis charge la plus récente."""
-        self.grid_list = await fetch_grid_list(self.client)
+        """Récupère la liste des grilles puis charge la plus récente.
+
+        La liste est mise en cache pour la journée : une nouvelle grille ne
+        paraît qu'une fois par jour, donc rouvrir l'app le même jour évite tout
+        appel réseau (la grille du jour est déjà connue et en cache).
+        """
+        today = date.today().isoformat()
+        cached = _read_json(GRIDLIST_CACHE_FILE)
+        if cached.get("date") == today and cached.get("grids"):
+            self.grid_list = cached["grids"]
+        else:
+            self.grid_list = await fetch_grid_list(self.client)
+            if self.grid_list:
+                _write_json(
+                    GRIDLIST_CACHE_FILE, {"date": today, "grids": self.grid_list}
+                )
+
         if not self.grid_list:
             self.query_one("#grid-view", GridView).update(
                 "Impossible de charger la liste des grilles."
@@ -409,21 +456,30 @@ class MotsCroisesTUI(App):
         await self._load_grid(entry)
 
     async def _load_grid(self, entry: dict) -> None:
-        """Charge la grille `entry` ({number, date, display}) et sa sauvegarde."""
-        self.query_one("#grid-view", GridView).update("Chargement de la grille…")
-        try:
-            puzzle = await fetch_puzzle(self.client, entry["date"])
-        except Exception:
-            puzzle = None
-        if not puzzle:
-            self.query_one("#grid-view", GridView).update(
-                "Impossible de charger cette grille."
-            )
-            self.notify("Échec du chargement de la grille.", severity="error")
-            return
+        """Charge la grille `entry` ({number, date, display}) et sa sauvegarde.
 
-        puzzle["number"] = entry["number"]
-        puzzle["display"] = entry["display"]
+        Les grilles ne changent pas : une fois téléchargée, une grille est
+        gardée en cache et réutilisée sans nouvel appel réseau.
+        """
+        key = str(entry["number"])
+        puzzle = self.grid_cache.get(key)
+        if puzzle is None:
+            self.query_one("#grid-view", GridView).update("Chargement de la grille…")
+            try:
+                puzzle = await fetch_puzzle(self.client, entry["date"])
+            except Exception:
+                puzzle = None
+            if not puzzle:
+                self.query_one("#grid-view", GridView).update(
+                    "Impossible de charger cette grille."
+                )
+                self.notify("Échec du chargement de la grille.", severity="error")
+                return
+            self.grid_cache[key] = puzzle
+            _write_json(GRIDS_CACHE_FILE, self.grid_cache)  # survit aux redémarrages
+
+        # Copie superficielle : number/display dépendent de l'entrée choisie.
+        puzzle = {**puzzle, "number": entry["number"], "display": entry["display"]}
         self.puzzle = puzzle
         self.board = Board(puzzle)
         self.sub_title = f"franceinfo · grille n°{entry['number']} ({entry['display']})"
@@ -630,6 +686,8 @@ class MotsCroisesTUI(App):
         self._render_all()
 
     def on_key(self, event) -> None:
+        if self._modal_open:
+            return  # palette / sélecteur ouvert : on ne saisit pas dans la grille
         ch = event.character
         if ch and len(ch) == 1 and ch.isalpha():
             event.stop()

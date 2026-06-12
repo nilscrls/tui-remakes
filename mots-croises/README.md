@@ -13,8 +13,8 @@ le site : les réponses ne sont jamais présentes en clair côté client.
 uv run mots-croises/mots-croises.py
 ```
 
-La grille du jour s'ouvre automatiquement. Appuyez sur **G** pour choisir une
-autre grille (du jour ou des archives) dans un sélecteur, avec l'état de
+La grille du jour s'ouvre automatiquement. Appuyez sur **Ctrl+G** pour choisir
+une autre grille (du jour ou des archives) dans un sélecteur, avec l'état de
 progression de chacune.
 
 ## Jouer
@@ -28,7 +28,7 @@ progression de chacune.
 | **Espace** | bascule horizontal / vertical |
 | **Tab** | mot suivant non trouvé |
 | **Retour arrière** | efface |
-| **G** | choisir une grille (jour / archives) |
+| **Ctrl+G** | choisir une grille (jour / archives) |
 | **Ctrl+Q** | quitter |
 
 Dès qu'un mot est correctement rempli, il est validé : ses cases deviennent
@@ -41,3 +41,9 @@ La progression est enregistrée automatiquement dans `saves.json`, **par grille*
 (indexée par son numéro, ex. `1187`). On peut fermer le jeu et le rouvrir pour
 reprendre là où on s'était arrêté, y compris sur plusieurs grilles différentes
 en parallèle.
+
+Les grilles téléchargées sont mises en cache dans `grids_cache.json` (elles ne
+changent jamais) : une grille déjà ouverte se recharge instantanément, même
+après redémarrage. La liste des grilles du jour est elle aussi mise en cache
+(`gridlist_cache.json`) : rouvrir l'app le même jour ne fait **aucun** appel
+réseau au démarrage.

@@ -50,7 +50,8 @@ GridPickerScreen {
     padding: 1 2;
     margin-right: 1;
     background: $surface;
-    align: center middle;
+    /* Ancré en haut : la grille reste fixe, la définition grandit vers le bas. */
+    align: center top;
 }
 
 #grid-view {
