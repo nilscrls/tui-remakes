@@ -275,20 +275,8 @@ class Board:
 #   ligne 1           : bordure haute
 #   lignes paires >=2 : contenu d'une rangée   (rangée r -> ligne 2 + 2*r)
 #   lignes impaires   : séparateurs / bordure basse
-LABEL_W = 2   # gouttière de gauche (lettre de rangée + espace)
-CELL_W = 3    # largeur intérieure d'une case (" X ")
-STRIDE_X = CELL_W + 1  # case + bordure verticale
+LABEL_W = 2
 PAD = " " * LABEL_W
-
-
-def _cell_center_x(col: int) -> int:
-    """Colonne (en caractères) du centre de la case `col`."""
-    return LABEL_W + 2 + STRIDE_X * col
-
-
-def _cell_center_y(row: int) -> int:
-    """Ligne (en caractères) du centre de la case `row`."""
-    return 2 + 2 * row
 
 
 class GridView(Static):
@@ -372,11 +360,14 @@ class MotsCroisesTUI(App):
         Binding("backspace", "backspace", "Effacer", show=False),
         Binding("tab", "next_word", "Mot suivant"),
         Binding("ctrl+g", "choose_grid", "Grilles"),
+        Binding("ctrl+r", "refresh", "Rafraîchir"),
+        Binding("ctrl+up", "zoom_in", "Zoom +", show=False),
+        Binding("ctrl+down", "zoom_out", "Zoom -", show=False),
     ]
 
     # Actions de jeu désactivées quand un écran modal est ouvert (palette, etc.).
     _GAME_ACTIONS = frozenset(
-        {"move", "toggle_direction", "backspace", "next_word", "choose_grid"}
+        {"move", "toggle_direction", "backspace", "next_word", "choose_grid", "refresh"}
     )
 
     def __init__(self, *args, **kwargs):
@@ -389,6 +380,7 @@ class MotsCroisesTUI(App):
         self.cursor = (0, 0)
         self.direction = "x"
         self._last_click = None  # dernière case cliquée (pour le clic/re-clic)
+        self.cell_w = 3
         self.clue_items: dict[str, ClueItem] = {}
         self.client = httpx.AsyncClient(timeout=30)
 
@@ -603,16 +595,17 @@ class MotsCroisesTUI(App):
         cur_word = board.word_through(*self.cursor, self.direction)
         word_cells = set(cur_word.cells) if cur_word else set()
         dim = "#44475a"
-        dash = "─" * CELL_W
+        cell_w = self.cell_w
+        stride_x = cell_w + 1
+        dash = "─" * cell_w
 
         def hline(left: str, mid: str, right: str) -> str:
             body = (dash + mid) * (cols - 1) + dash
             return f"[{dim}]{PAD}{left}{body}{right}[/]"
 
-        # En-tête : numéros de colonnes alignés sur le centre des cases.
-        header = [" "] * (LABEL_W + 1 + STRIDE_X * cols)
+        header = [" "] * (LABEL_W + 1 + stride_x * cols)
         for c in range(cols):
-            header[_cell_center_x(c)] = str(c + 1)
+            header[LABEL_W + 1 + cell_w // 2 + stride_x * c] = str(c + 1)
         lines = ["".join(header), hline("┌", "┬", "┐")]
 
         bar = f"[{dim}]│[/]"
@@ -622,12 +615,14 @@ class MotsCroisesTUI(App):
                 parts.append(bar)
                 if not board.is_white(r, c):
                     # Case noire (bloquée, non cliquable) : vraiment noire.
-                    parts.append(f"[on #0a0a0f]{' ' * CELL_W}[/]")
+                    parts.append(f"[on #0a0a0f]{' ' * cell_w}[/]")
                     continue
                 ch = board.letters[r][c] or " "
-                cell = f"{ch:^{CELL_W}}"
+                cell = f"{ch:^{cell_w}}"
                 if board.cell_locked(r, c):
                     parts.append(f"[bold #14401f on #50fa7b]{cell}[/]")  # mot trouvé (vert)
+                elif (r, c) == self.cursor and board.cell_wrong(r, c):
+                    parts.append(f"[bold #f8f8f2 on #ff5555]{cell}[/]")  # curseur + faux (rouge)
                 elif (r, c) == self.cursor:
                     parts.append(f"[bold #21222c on #ff79c6]{cell}[/]")  # curseur (rose)
                 elif board.cell_wrong(r, c):
@@ -663,8 +658,9 @@ class MotsCroisesTUI(App):
         if not board:
             return
         # Inverse de _cell_center_x / _cell_center_y (cases avec bordures).
+        stride_x = self.cell_w + 1
         r = round((y - 2) / 2)
-        c = round((x - (LABEL_W + 2)) / STRIDE_X)
+        c = round((x - LABEL_W - 1 - self.cell_w // 2) / stride_x)
         if not (0 <= r < board.rows and 0 <= c < board.cols):
             return
         if not board.is_white(r, c):
@@ -802,6 +798,34 @@ class MotsCroisesTUI(App):
                 self.direction = w.axe
                 break
         self._render_all()
+
+    # ---------- Rafraîchir / Zoom ----------
+
+    def action_refresh(self) -> None:
+        _write_json(GRIDLIST_CACHE_FILE, {})
+        self._refresh_list()
+
+    @work(exclusive=True, group="refresh")
+    async def _refresh_list(self) -> None:
+        self.grid_list = await fetch_grid_list(self.client)
+        if self.grid_list:
+            _write_json(
+                GRIDLIST_CACHE_FILE,
+                {"date": date.today().isoformat(), "grids": self.grid_list},
+            )
+            self.notify(f"{len(self.grid_list)} grilles chargées.", severity="information")
+        else:
+            self.notify("Impossible de rafraîchir la liste.", severity="error")
+
+    def action_zoom_in(self) -> None:
+        if self.cell_w < 7:
+            self.cell_w += 2
+            self._render_grid()
+
+    def action_zoom_out(self) -> None:
+        if self.cell_w > 1:
+            self.cell_w -= 2
+            self._render_grid()
 
     # ---------- Validation (côté serveur) ----------
 
